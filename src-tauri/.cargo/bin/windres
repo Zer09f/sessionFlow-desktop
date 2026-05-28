@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper for GNU windres to work around GCC 15 preprocessor bug
+# GCC 15's C preprocessor rejects non-C tokens in RC files
+exec /c/ProgramData/mingw64/mingw64/bin/windres.exe --preprocessor=cat "$@"
