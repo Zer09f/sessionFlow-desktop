@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 const MAX_JSONL_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
-struct IndexEntry {
-    title: String,
-    updated_at: String,
+pub struct IndexEntry {
+    pub title: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -328,7 +328,7 @@ pub fn load(custom_root: Option<String>) -> Result<HistoryResponse, String> {
     })
 }
 
-fn default_codex_root() -> PathBuf {
+pub fn default_codex_root() -> PathBuf {
     if let Ok(value) = env::var("CODEX_HOME") {
         return PathBuf::from(value);
     }
@@ -341,7 +341,7 @@ fn default_codex_root() -> PathBuf {
     PathBuf::from(".codex")
 }
 
-fn parse_index(path: &Path) -> Result<HashMap<String, IndexEntry>, String> {
+pub fn parse_index(path: &Path) -> Result<HashMap<String, IndexEntry>, String> {
     let file = File::open(path).map_err(|err| format!("无法打开索引 {}: {err}", path.display()))?;
     let reader = BufReader::new(file);
     let mut output = HashMap::new();

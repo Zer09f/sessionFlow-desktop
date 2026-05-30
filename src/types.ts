@@ -54,3 +54,28 @@ export interface Keyword {
 
 export type SortMode = "updated-desc" | "updated-asc" | "messages-desc" | "tools-desc";
 export type RangeMode = "all" | "7" | "30" | "90";
+
+export interface SyncStatus {
+  config_provider: string;
+  config_model: string;
+  db_mismatched: number;
+  file_mismatched: number;
+  index_missing: number;
+  total_threads: number;
+  needs_sync: boolean;
+}
+
+export interface SyncResult {
+  db_updated: number;
+  files_updated: number;
+  index_rebuilt: boolean;
+  backup_path: string;
+}
+
+export interface BackupInfo {
+  backup_path: string;
+  db_backed_up: boolean;
+  index_backed_up: boolean;
+  session_meta_count: number;
+  timestamp: string;
+}

@@ -297,12 +297,14 @@ fn parse_session_jsonl(
                         }
                     }
                     if let Some(usage) = msg.get("usage") {
-                        total_tokens = usage
+                        if let Some(tokens) = usage
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .zip(usage.get("output_tokens").and_then(|v| v.as_u64()))
                             .map(|(i, o)| i + o)
-                            .or(total_tokens);
+                        {
+                            total_tokens = Some(total_tokens.unwrap_or(0) + tokens);
+                        }
                     }
                 }
             }

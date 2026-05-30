@@ -1,5 +1,11 @@
 use std::path::Path;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NEW_CONSOLE: u32 = 0x00000010;
+
 /// CLI 恢复：用命令行工具精确恢复到指定会话
 #[tauri::command]
 pub fn restore_session(
@@ -14,7 +20,7 @@ pub fn restore_session(
 
     let source = source.unwrap_or_default();
     let has_id = !id.is_empty();
-    let dir: &str = if cwd.is_empty() { "." } else { &cwd };
+    let dir = resolve_work_dir(&cwd);
 
     let (cli, args) = build_cli_command(&source, has_id, &id);
     let full_cmd = build_command_string(cli, &args);
@@ -26,11 +32,10 @@ pub fn restore_session(
         ));
     }
 
-    if open_in_terminal(dir, cli, &args) {
-        return Ok(full_cmd);
+    match open_in_terminal(&dir, cli, &args) {
+        Ok(_) => Ok(full_cmd),
+        Err(e) => Err(format!("启动 {} 失败: {}\n恢复命令: {}", cli, e, full_cmd)),
     }
-
-    Err(format!("启动 {} 失败，请确认 CLI 工具是否正常安装。", cli))
 }
 
 /// 客户端恢复：用桌面客户端或 VS Code 打开项目目录
@@ -38,6 +43,10 @@ pub fn restore_session(
 pub fn restore_via_client(cwd: String, source: Option<String>) -> Result<String, String> {
     if cwd.is_empty() {
         return Err("工作目录为空，无法通过客户端恢复。".to_string());
+    }
+
+    if !Path::new(&cwd).exists() {
+        return Err(format!("工作目录不存在: {}", cwd));
     }
 
     let source = source.unwrap_or_default();
@@ -55,8 +64,11 @@ pub fn restore_via_client(cwd: String, source: Option<String>) -> Result<String,
     }
 
     // 回退到 VS Code
-    if cli_exists("code") && open_in_terminal(&cwd, "code", &[]) {
-        return Ok("VS Code".into());
+    if cli_exists("code") {
+        match open_in_terminal(&cwd, "code", &[]) {
+            Ok(_) => return Ok("VS Code".into()),
+            Err(e) => return Err(format!("启动 VS Code 失败: {}", e)),
+        }
     }
 
     Err("未检测到可用的桌面客户端或 VS Code，请先安装。".to_string())
@@ -111,6 +123,16 @@ fn build_command_string(cli: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// 将 cwd 解析为有效的起始目录
+fn resolve_work_dir(cwd: &str) -> String {
+    if !cwd.is_empty() && Path::new(cwd).exists() {
+        return cwd.to_string();
+    }
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 // ── CLI 检测与启动 ──
 
 fn cli_exists(cli: &str) -> bool {
@@ -127,19 +149,18 @@ fn cli_exists(cli: &str) -> bool {
     result.map(|r| r.status.success()).unwrap_or(false)
 }
 
-fn open_in_terminal(cwd: &str, cli: &str, args: &[String]) -> bool {
+fn open_in_terminal(cwd: &str, cli: &str, args: &[String]) -> Result<(), String> {
     let full_cmd = build_command_string(cli, args);
 
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .arg("/c")
-        .arg("start")
-        .arg("")
-        .current_dir(cwd)
-        .arg("cmd")
-        .arg("/k")
-        .arg(&full_cmd)
-        .spawn();
+    let result = {
+        std::process::Command::new("cmd")
+            .arg("/k")
+            .arg(&full_cmd)
+            .current_dir(cwd)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+    };
 
     #[cfg(target_os = "macos")]
     let result = {
@@ -166,7 +187,7 @@ fn open_in_terminal(cwd: &str, cli: &str, args: &[String]) -> bool {
             .spawn()
     };
 
-    result.map(|_| true).unwrap_or(false)
+    result.map(|_| ()).map_err(|e| format!("{}", e))
 }
 
 // ── 桌面客户端检测 ──

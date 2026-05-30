@@ -144,17 +144,20 @@ impl DiscoveredSchema {
     }
 
     fn session_sql(&self) -> String {
+        let cols = [
+            col_or_null(&self.sess_col_id),
+            col_or_null(&self.sess_col_title),
+            col_or_null(&self.sess_col_directory),
+            col_or_null(&self.sess_col_parent),
+            col_or_null(&self.sess_col_model),
+            col_or_null(&self.sess_col_created),
+            col_or_null(&self.sess_col_updated),
+        ];
         format!(
-            "SELECT {id}, {title}, {dir}, {parent}, {model}, {created}, {updated} \
-             FROM {tbl} ORDER BY {updated} DESC",
-            id = self.sess_col_id,
-            title = self.sess_col_title,
-            dir = self.sess_col_directory,
-            parent = self.sess_col_parent,
-            model = self.sess_col_model,
-            created = self.sess_col_created,
-            updated = self.sess_col_updated,
-            tbl = self.sess_table,
+            "SELECT {} FROM {} ORDER BY {} DESC",
+            cols.join(", "),
+            self.sess_table,
+            &self.sess_col_updated,
         )
     }
 
@@ -226,6 +229,14 @@ fn find_col(cols: &[String], candidates: &[&str]) -> Result<String, String> {
 
 fn find_col_or(cols: &[String], candidates: &[&str], default: &str) -> String {
     find_col(cols, candidates).unwrap_or_else(|_| default.to_string())
+}
+
+fn col_or_null(col: &str) -> String {
+    if col.is_empty() {
+        "NULL".to_string()
+    } else {
+        col.to_string()
+    }
 }
 
 // ── SQLite 加载（v1.14+）─────────────────────────────────────────────────────

@@ -33,7 +33,12 @@ fn main() {
             load_gemini_history,
             commands::session::restore_session,
             commands::session::restore_via_client,
-            commands::session::open_path
+            commands::session::open_path,
+            commands::sync::codex_sync_status,
+            commands::sync::codex_sync_backup,
+            commands::sync::codex_sync_execute,
+            commands::sync::codex_sync_restore,
+            commands::sync::codex_sync_list_backups,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri application");

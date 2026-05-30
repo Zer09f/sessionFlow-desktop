@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import type { CodexMessage, CodexSession, HistoryResponse, RangeMode, SortMode } from "./types";
+import type { CodexMessage, CodexSession, HistoryResponse, RangeMode, SortMode, SyncStatus, SyncResult, BackupInfo } from "./types";
 
 type SourceTab = "codex" | "claude" | "opencode" | "gemini";
 
@@ -20,6 +20,12 @@ const expandAllMessages = ref(false);
 const messageLimit = ref(50);
 const messageRoleFilter = ref<"all" | "assistant" | "user">("all");
 const theme = ref<"light" | "dark">("light");
+
+// ── Codex 同步恢复状态 ──
+const syncStatus = ref<SyncStatus | null>(null);
+const syncLoading = ref(false);
+const syncResult = ref<SyncResult | null>(null);
+const syncError = ref("");
 
 const stateMap: Record<SourceTab, ReturnType<typeof useSourceState>> = {
   codex: useSourceState(),
@@ -97,9 +103,8 @@ const tabMeta: Record<SourceTab, TabMeta> = {
 
 const filteredSessions = computed(() => {
   const s = src().sessions.value;
-  const latest = s.reduce((max, item) => Math.max(max, dateOf(item.updated_at).getTime()), 0);
   const rangeDays = src().range.value === "all" ? null : Number(src().range.value);
-  const minTime = rangeDays ? latest - rangeDays * 24 * 60 * 60 * 1000 : 0;
+  const minTime = rangeDays ? Date.now() - rangeDays * 24 * 60 * 60 * 1000 : 0;
   const needle = src().query.value.trim().toLowerCase();
   const docF = src().docFilter.value;
 
@@ -154,6 +159,8 @@ const summary = computed(() => {
     messages: items.reduce((sum, item) => sum + item.messages.length, 0),
     tools: items.reduce((sum, item) => sum + item.tools.length, 0),
     documents: items.reduce((sum, item) => sum + (item.documents ? item.documents.length : 0), 0),
+    totalTokens: items.reduce((sum, item) => sum + (item.total_tokens ?? 0), 0),
+    sessionsWithTokens: items.filter((item) => item.total_tokens != null).length,
     activeDays: Object.keys(days).length,
     users: roleCounts.user ?? 0,
     assistants: roleCounts.assistant ?? 0,
@@ -169,16 +176,21 @@ const dayEntries = computed(() => {
   const keys = Object.keys(counts).sort();
   if (!keys.length) return [];
 
+  const rangeDays = src().range.value === "all" ? null : Number(src().range.value);
+  const today = formatDate(new Date());
+
   const entries: Array<{ day: string; count: number }> = [];
-  const start = new Date(`${keys[0]}T00:00:00`);
-  const end = new Date(`${keys.at(-1)}T00:00:00`);
+  const end = new Date(`${today}T00:00:00`);
+  const start = rangeDays
+    ? new Date(end.getTime() - (rangeDays - 1) * 24 * 60 * 60 * 1000)
+    : new Date(`${keys[0]}T00:00:00`);
 
   for (const cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
     const key = formatDate(cursor);
     entries.push({ day: key, count: counts[key] ?? 0 });
   }
 
-  return entries.slice(-90);
+  return rangeDays ? entries : entries.slice(-90);
 });
 
 const maxDayCount = computed(() => Math.max(...dayEntries.value.map((entry) => entry.count), 1));
@@ -288,6 +300,55 @@ async function restoreViaClient() {
   }
 }
 
+// ── Codex 同步恢复函数 ──
+async function checkSyncStatus() {
+  syncLoading.value = true;
+  syncError.value = "";
+  syncResult.value = null;
+  try {
+    syncStatus.value = await invoke<SyncStatus>("codex_sync_status", {
+      root: stateMap.codex.rootPath.value.trim() || null,
+    });
+  } catch (err) {
+    syncError.value = String(err);
+  } finally {
+    syncLoading.value = false;
+  }
+}
+
+async function createSyncBackup() {
+  syncLoading.value = true;
+  syncError.value = "";
+  try {
+    const info = await invoke<BackupInfo>("codex_sync_backup", {
+      root: stateMap.codex.rootPath.value.trim() || null,
+    });
+    alert(`备份已创建: ${info.backup_path}`);
+  } catch (err) {
+    syncError.value = String(err);
+  } finally {
+    syncLoading.value = false;
+  }
+}
+
+async function executeSync() {
+  if (!confirm("即将修改 Codex 数据库和会话文件。建议先创建备份。是否继续？")) return;
+  syncLoading.value = true;
+  syncError.value = "";
+  try {
+    syncResult.value = await invoke<SyncResult>("codex_sync_execute", {
+      root: stateMap.codex.rootPath.value.trim() || null,
+    });
+    if (activeTab.value === "codex" && stateMap.codex.loaded.value) {
+      await loadHistory();
+    }
+  } catch (err) {
+    syncError.value = String(err);
+  } finally {
+    syncLoading.value = false;
+  }
+}
+
 async function openDir(dir: string) {
   try {
     await invoke("open_path", { path: dir });
@@ -365,9 +426,11 @@ function exportSummary() {
       updated_at: item.updated_at,
       messages: item.messages.length,
       tool_calls: item.tools.length,
+      total_tokens: item.total_tokens,
       cwd: item.cwd,
       keywords: item.keywords.map((k) => k.word),
     })),
+    total_tokens: summary.value.totalTokens,
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -439,6 +502,12 @@ function dateOf(value: string) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value || 0);
+}
+
+function formatTokens(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
 }
 
 function formatDate(date: Date) {
@@ -617,6 +686,60 @@ function makeSample(id: string, title: string, updatedAt: number, count: number,
             </div>
           </section>
 
+          <!-- Codex 历史找回面板 -->
+          <section v-if="activeTab === 'codex' && loaded" class="codex-sync-panel">
+            <div class="sync-header">
+              <div>
+                <h2>历史找回</h2>
+                <p>切换 API 提供商/模型后，旧会话可能从 Codex 侧边栏消失。此功能将旧会话的 <code>model_provider</code> 和 <code>model</code> 更新为当前配置值。</p>
+              </div>
+            </div>
+
+            <div v-if="syncStatus" class="sync-status-grid">
+              <div class="detail-chip">
+                <span class="chip-label">当前提供商</span>
+                <strong class="chip-value">{{ syncStatus.config_provider || '(未设置)' }}</strong>
+              </div>
+              <div class="detail-chip">
+                <span class="chip-label">当前模型</span>
+                <strong class="chip-value">{{ syncStatus.config_model || '(未设置)' }}</strong>
+              </div>
+              <div class="detail-chip" :class="{ 'sync-warn': syncStatus.db_mismatched > 0 }">
+                <span class="chip-label">数据库不匹配</span>
+                <strong class="chip-value">{{ syncStatus.db_mismatched }} / {{ syncStatus.total_threads }}</strong>
+              </div>
+              <div class="detail-chip" :class="{ 'sync-warn': syncStatus.file_mismatched > 0 }">
+                <span class="chip-label">文件不匹配</span>
+                <strong class="chip-value">{{ syncStatus.file_mismatched }}</strong>
+              </div>
+              <div class="detail-chip" :class="{ 'sync-warn': syncStatus.index_missing > 0 }">
+                <span class="chip-label">索引缺失</span>
+                <strong class="chip-value">{{ syncStatus.index_missing }}</strong>
+              </div>
+            </div>
+
+            <div v-if="syncResult" class="status-line success" style="margin-top:10px" aria-live="polite">
+              <span class="status-indicator"></span>
+              <span class="status-text">同步完成：数据库更新 {{ syncResult.db_updated }} 条，会话文件更新 {{ syncResult.files_updated }} 个，索引{{ syncResult.index_rebuilt ? '已重建' : '无需重建' }}。</span>
+            </div>
+            <div v-if="syncError" class="status-line danger" style="margin-top:10px" aria-live="polite">
+              <span class="status-indicator"></span>
+              <span class="status-text">{{ syncError }}</span>
+            </div>
+
+            <div class="sync-actions">
+              <button class="secondary-button" type="button" :disabled="syncLoading" @click="checkSyncStatus">
+                {{ syncLoading ? '检查中...' : '检查同步状态' }}
+              </button>
+              <button class="secondary-button" type="button" :disabled="syncLoading || !syncStatus?.needs_sync" @click="createSyncBackup">
+                创建备份
+              </button>
+              <button class="primary-button" type="button" :disabled="syncLoading || !syncStatus?.needs_sync" @click="executeSync">
+                {{ syncLoading ? '同步中...' : '执行同步' }}
+              </button>
+            </div>
+          </section>
+
           <section class="status-line" :class="{ danger: statusError, success: !statusError && status.includes('已') }" aria-live="polite">
             <span class="status-indicator"></span>
             <span class="status-text">{{ status }}</span>
@@ -676,6 +799,16 @@ function makeSample(id: string, title: string, updatedAt: number, count: number,
               </div>
               <strong>{{ formatNumber(summary.documents) }}</strong>
               <span class="metric-sub">Artifacts & 源文件</span>
+            </article>
+            <article class="metric-card">
+              <div class="metric-header">
+                <span class="metric-label">Token 消耗</span>
+                <div class="metric-icon">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+              </div>
+              <strong>{{ summary.totalTokens > 0 ? formatTokens(summary.totalTokens) : "未记录" }}</strong>
+              <span class="metric-sub">{{ summary.sessionsWithTokens }} / {{ summary.sessions }} 个会话有记录</span>
             </article>
           </section>
 
@@ -875,9 +1008,13 @@ function makeSample(id: string, title: string, updatedAt: number, count: number,
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
                       CLI 恢复
                     </button>
-                    <button class="restore-btn client-btn" @click="restoreViaClient" title="通过桌面客户端或 VS Code 打开项目">
+                    <button v-if="activeTab !== 'codex'" class="restore-btn client-btn" @click="restoreViaClient" title="通过桌面客户端或 VS Code 打开项目">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
                       客户端恢复
+                    </button>
+                    <button v-else class="restore-btn client-btn sync-trigger-btn" @click="executeSync" :disabled="syncLoading" title="将旧会话的提供商/模型更新为当前配置，使其重新出现在 Codex 侧边栏">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                      {{ syncLoading ? '同步中...' : '历史同步' }}
                     </button>
                     <button v-if="selectedSession.cwd" class="open-dir-btn" @click="openDir(selectedSession.cwd)" title="在资源管理器中打开项目目录">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
