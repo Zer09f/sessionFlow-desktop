@@ -334,21 +334,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-history-visualizer"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "rayon",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tempfile",
- "toml 0.8.2",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2865,6 +2850,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "sessionflow-desktop"
+version = "1.0.0"
+dependencies = [
+ "dirs",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+ "toml 0.8.2",
 ]
 
 [[package]]

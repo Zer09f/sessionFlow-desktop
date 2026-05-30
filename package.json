@@ -1,8 +1,8 @@
 {
-  "name": "codex-history-visualizer",
-  "version": "0.1.0",
+  "name": "sessionflow-desktop",
+  "version": "1.0.0",
   "private": true,
-  "description": "Rust + Vue desktop visualizer for local Codex session history.",
+  "description": "SessionFlow Desktop — AI 编程助手会话历史可视化工具",
   "type": "module",
   "scripts": {
     "start": "tauri dev",
