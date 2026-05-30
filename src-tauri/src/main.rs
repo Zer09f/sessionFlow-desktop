@@ -24,6 +24,20 @@ fn load_gemini_history(root: Option<String>) -> Result<history::HistoryResponse,
     gemini_history::load(root)
 }
 
+#[tauri::command]
+fn save_export(filename: String, content: String) -> Result<String, String> {
+    let export_dir = dirs::desktop_dir()
+        .or_else(dirs::download_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let export_dir = export_dir.join("SessionFlow-exports");
+    std::fs::create_dir_all(&export_dir)
+        .map_err(|e| format!("创建导出目录失败: {e}"))?;
+    let path = export_dir.join(&filename);
+    std::fs::write(&path, &content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -31,6 +45,7 @@ fn main() {
             load_claude_history,
             load_opencode_history,
             load_gemini_history,
+            save_export,
             commands::session::restore_session,
             commands::session::restore_via_client,
             commands::session::open_path,

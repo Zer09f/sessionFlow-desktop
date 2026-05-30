@@ -3,6 +3,11 @@ import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { CodexMessage, CodexSession, HistoryResponse, RangeMode, SortMode, SyncStatus, SyncResult, BackupInfo } from "./types";
 
+type ExportFormat = "json" | "markdown";
+const isTauri = "__TAURI_INTERNALS__" in window;
+const exportFormat = ref<ExportFormat>("json");
+const showExportMenu = ref(false);
+
 type SourceTab = "codex" | "claude" | "opencode" | "gemini";
 
 interface TabMeta {
@@ -342,6 +347,7 @@ async function executeSync() {
     if (activeTab.value === "codex" && stateMap.codex.loaded.value) {
       await loadHistory();
     }
+    await checkSyncStatus();
   } catch (err) {
     syncError.value = String(err);
   } finally {
@@ -415,30 +421,128 @@ function loadSample() {
   state.status.value = "已载入示例数据。";
 }
 
-function exportSummary() {
+function buildExportJSON(): string {
   const meta = tabMeta[activeTab.value];
   const payload = {
     source: meta.label,
     exported_at: new Date().toISOString(),
+    total_sessions: filteredSessions.value.length,
     sessions: filteredSessions.value.map((item) => ({
       id: item.id,
       title: item.title,
+      started_at: item.started_at,
       updated_at: item.updated_at,
-      messages: item.messages.length,
-      tool_calls: item.tools.length,
-      total_tokens: item.total_tokens,
       cwd: item.cwd,
-      keywords: item.keywords.map((k) => k.word),
+      model: item.model,
+      source: item.source,
+      messages: item.messages.map((m) => ({ role: m.role, text: m.text, timestamp: m.timestamp })),
+      tools: item.tools.map((t) => ({ name: t.name, timestamp: t.timestamp, call_id: t.call_id })),
+      keywords: item.keywords,
+      documents: item.documents ?? [],
+      total_tokens: item.total_tokens,
     })),
     total_tokens: summary.value.totalTokens,
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  return JSON.stringify(payload, null, 2);
+}
+
+function buildExportMarkdown(): string {
+  const meta = tabMeta[activeTab.value];
+  const now = formatDateTime(new Date().toISOString());
+  const lines: string[] = [
+    `# SessionFlow — ${meta.label} 历史导出`,
+    "",
+    `- 导出时间：${now}`,
+    `- 数据源：${meta.label}`,
+    `- 总会话数：${filteredSessions.value.length}`,
+    "",
+    "---",
+    "",
+  ];
+
+  for (const item of filteredSessions.value) {
+    lines.push(`## ${item.title || "未命名会话"}`);
+    lines.push("");
+    lines.push(`- **ID**: ${item.id}`);
+    if (item.cwd) lines.push(`- **工作目录**: ${item.cwd}`);
+    lines.push(`- **模型**: ${item.model || meta.sourceLabel}`);
+    lines.push(`- **时间**: ${formatDateTime(item.started_at)} — ${formatDateTime(item.updated_at)}`);
+    if (item.keywords.length) {
+      lines.push(`- **关键词**: ${item.keywords.map((k) => `#${k.word}`).join(" ")}`);
+    }
+    lines.push("");
+
+    if (item.messages.length) {
+      lines.push("### 消息记录");
+      lines.push("");
+      for (const msg of item.messages) {
+        const time = formatDateTime(msg.timestamp).split(" ").pop() || "";
+        const role = msg.role === "user" ? "用户" : msg.role === "assistant" ? meta.sourceLabel : msg.role === "tool" ? "工具" : "系统";
+        lines.push(`**[${time}] ${role}：**`);
+        lines.push(msg.text);
+        lines.push("");
+      }
+    }
+
+    if (item.tools.length) {
+      lines.push("### 工具调用");
+      lines.push("");
+      for (const tool of item.tools) {
+        const time = formatDateTime(tool.timestamp).split(" ").pop() || "";
+        lines.push(`- **[${time}]** ${tool.name}`);
+      }
+      lines.push("");
+    }
+
+    if (item.documents && item.documents.length) {
+      lines.push("### 产出文档");
+      lines.push("");
+      for (const doc of item.documents) {
+        const action = doc.action === "create" ? "新建" : "编辑";
+        lines.push(`- ${doc.path} (${doc.doc_type}, ${action} ${doc.edits} 次)`);
+      }
+      lines.push("");
+    }
+
+    lines.push("---");
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+function downloadBlob(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${activeTab.value}-history-summary-${formatDate(new Date())}.json`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+async function exportData() {
+  showExportMenu.value = false;
+  const dateStr = formatDate(new Date());
+  const fmt = exportFormat.value;
+
+  const content = fmt === "json" ? buildExportJSON() : buildExportMarkdown();
+  const ext = fmt === "json" ? "json" : "md";
+  const mime = fmt === "json" ? "application/json" : "text/markdown";
+  const defaultName = `${activeTab.value}-history-${dateStr}.${ext}`;
+
+  if (isTauri) {
+    try {
+      const path = await invoke<string>("save_export", { filename: defaultName, content });
+      const folder = path.replace(/[/\\][^/\\]+$/, "");
+      alert(`已导出到: ${path}\n点击确定打开导出目录。`);
+      await invoke("open_path", { path: folder });
+    } catch (err) {
+      alert(`导出失败: ${err}`);
+    }
+  } else {
+    downloadBlob(content, defaultName, mime);
+  }
 }
 
 const systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
@@ -651,10 +755,21 @@ function makeSample(id: string, title: string, updatedAt: number, count: number,
             </div>
           </div>
           <div class="topbar-actions">
-            <button class="secondary-button export-btn" type="button" :disabled="!filteredSessions.length" @click="exportSummary">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              导出数据
-            </button>
+            <div class="export-group">
+              <button class="secondary-button export-btn" type="button" :disabled="!filteredSessions.length" @click="exportData">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                导出数据
+              </button>
+              <div class="export-format-wrapper">
+                <button class="secondary-button export-format-btn" type="button" :disabled="!filteredSessions.length" @click="showExportMenu = !showExportMenu" title="选择导出格式">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="showExportMenu" class="export-menu" @mouseleave="showExportMenu = false">
+                  <button type="button" :class="{ active: exportFormat === 'json' }" @click="exportFormat = 'json'; showExportMenu = false">JSON 格式</button>
+                  <button type="button" :class="{ active: exportFormat === 'markdown' }" @click="exportFormat = 'markdown'; showExportMenu = false">Markdown 格式</button>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -1012,9 +1127,9 @@ function makeSample(id: string, title: string, updatedAt: number, count: number,
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
                       客户端恢复
                     </button>
-                    <button v-else class="restore-btn client-btn sync-trigger-btn" @click="executeSync" :disabled="syncLoading" title="将旧会话的提供商/模型更新为当前配置，使其重新出现在 Codex 侧边栏">
+                    <button v-else class="restore-btn client-btn sync-trigger-btn" @click="executeSync" :disabled="syncLoading || !syncStatus?.needs_sync" title="将旧会话的提供商/模型更新为当前配置，使其重新出现在 Codex 侧边栏">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
-                      {{ syncLoading ? '同步中...' : '历史同步' }}
+                      {{ syncLoading ? '同步中...' : (syncStatus && !syncStatus.needs_sync ? '已同步' : '历史同步') }}
                     </button>
                     <button v-if="selectedSession.cwd" class="open-dir-btn" @click="openDir(selectedSession.cwd)" title="在资源管理器中打开项目目录">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
