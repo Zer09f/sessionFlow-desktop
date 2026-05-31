@@ -1,3 +1,6 @@
+// 防止 release 构建时弹出 CMD 窗口
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod claude_history;
 mod gemini_history;
 mod history;
